@@ -22,6 +22,7 @@ from midigpt.inference.config import (
     resolve_pitch_allow_set,
     resolve_rhythm_schedule,
     rhythm_grid_weight,
+    velocity_level_weights,
 )
 
 log = logging.getLogger(__name__)
@@ -569,9 +570,12 @@ class _VariationForcer:
         self._roll_note()
 
     def apply(self, mask_buf):
-        if self.bar_idx < len(self.bars_schedule) and not self.bars_schedule[self.bar_idx]:
+        if self.bar_idx >= len(self.bars_schedule) or not self.bars_schedule[self.bar_idx]:
             # An empty reference bar has no notes to vary: the model writes it like any generated bar. Treating it
-            # as a finished schedule blocked every note, while a bar needs one before it can end.
+            # as a finished schedule blocked every note, while a bar needs one before it can end. The same goes for
+            # bars past the last target: an AR step runs to its window's end (TrackEnd), and when the window extends
+            # past the target bars those bars are generated and then discarded; blocking their notes left the step
+            # unable to finish.
             return
         group = self._current_group()
         if group is None:
@@ -1528,6 +1532,47 @@ class SamplingSession:
 
         return (s, e), allow_bool, shape_weights
 
+    def _build_velocity_mask(self, step):
+        """Resolves controls["velocity_mask"] for whichever track applies to this step (same rule as pitch_mask):
+        ((range_start, range_end), level_weights[domain]) over the VelocityLevel tokens, or (None, None) if the
+        checkpoint has no VelocityLevel domain or no track in this step configures velocity_mask.
+
+        Unlike pitch_mask, both the hard set and the shape are applied by _apply_velocity_mask, which reweights the
+        VelocityLevel tokens among themselves and leaves their total probability alone. VelocityLevel is optional
+        (sticky: emitted only when the level changes), so removing probability from it would shift it to "keep the
+        current level" or to other tokens, and a bar with no VelocityLevel decodes at velocity 100.
+        """
+        import torch
+
+        velocity_mask = self._resolve_step_control(step, "velocity_mask")
+        if not velocity_mask:
+            return None, None
+        vocab = self._engine._tokenizer._vocab
+        s, e = vocab.range(_core.TokenType.VelocityLevel)
+        if s < 0 or e <= s:
+            return None, None
+        weights = torch.tensor(velocity_level_weights(velocity_mask, e - s), dtype=torch.float32)
+        return (s, e), weights
+
+    @staticmethod
+    def _apply_velocity_mask(probs, vel_range, weights):
+        """Reweight the VelocityLevel tokens of `probs` by `weights`, keeping their total probability: the model
+        still decides whether to set a velocity here, the mask decides which. If the model gives every allowed level
+        zero probability, the total goes to the allowed levels in proportion to their weights."""
+        lo, hi = vel_range
+        group = probs[lo:hi]
+        mass = float(group.sum().item())
+        if mass <= 0:
+            return probs
+        probs = probs.clone()
+        reweighted = group * weights
+        total = float(reweighted.sum().item())
+        if total > 0:
+            probs[lo:hi] = reweighted * (mass / total)
+        else:
+            probs[lo:hi] = weights * (mass / float(weights.sum().item()))
+        return probs
+
     def _build_rhythm_mask(self, step):
         """Resolves controls["rhythm_mask"] for whichever track applies to
         this step (see _resolve_step_control — same single-track-or-agree
@@ -1926,6 +1971,11 @@ class SamplingSession:
         # probs right before the sampling filters.
         _pitch_range, _pitch_allow, _pitch_shape = self._build_pitch_mask(step)
 
+        # Velocity control (controls["velocity_mask"]) — hard set and soft
+        # shape both reweight the VelocityLevel tokens among themselves, right
+        # before the sampling filters (see _build_velocity_mask).
+        _vmask_range, _vmask_weights = self._build_velocity_mask(step)
+
         # Rhythm control (controls["rhythm_mask"]) — hard exact-position mode
         # drives a _RhythmForcer that narrows mask_buf every token; soft grid
         # mode reweights probs like _pitch_shape.
@@ -2096,6 +2146,9 @@ class SamplingSession:
                     _shape_total = float(probs.sum().item())
                     if _shape_total > 0:
                         probs = probs / _shape_total
+
+                if _vmask_weights is not None:
+                    probs = self._apply_velocity_mask(probs, _vmask_range, _vmask_weights)
 
                 if _rhythm_grid is not None:
                     lo, hi = _rhythm_range
@@ -2438,6 +2491,7 @@ class SamplingSession:
         # _sample_step. Computed once for the whole batch: every row shares
         # the same prompt/step, only seed/temperature differ per row.
         _pitch_range, _pitch_allow, _pitch_shape = self._build_pitch_mask(step)
+        _vmask_range, _vmask_weights = self._build_velocity_mask(step)
 
         # Rhythm control — see the matching comment in _sample_step. One
         # _RhythmForcer PER ROW: rows are otherwise expected to stay in
@@ -2578,6 +2632,9 @@ class SamplingSession:
                         _shape_total = float(probs.sum().item())
                         if _shape_total > 0:
                             probs = probs / _shape_total
+
+                    if _vmask_weights is not None:
+                        probs = self._apply_velocity_mask(probs, _vmask_range, _vmask_weights)
 
                     if _rhythm_grid is not None:
                         lo, hi = _rhythm_range

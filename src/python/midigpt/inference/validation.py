@@ -21,6 +21,7 @@ from .config import (
     validate_pitch_mask,
     validate_remix,
     validate_rhythm_mask,
+    validate_velocity_mask,
 )
 
 log = logging.getLogger(__name__)
@@ -402,7 +403,7 @@ def validate_request(
     attr_levels = analyzer.attribute_levels() if analyzer is not None else {}
     # Non-attribute controls live on tp.controls. Each entry has its own
     # validator below; the names here are just the dispatch table.
-    KNOWN_CONTROLS = {"time_signature", "pitch_mask", "rhythm_mask", "remix"}
+    KNOWN_CONTROLS = {"time_signature", "pitch_mask", "velocity_mask", "rhythm_mask", "remix"}
     _pos_domain_size = _token_domain_size(cfg_dict, "TimeAbsolutePos")
     _cfg_dict = _config_dict(encoder_config)
     _ts_count = len(_cfg_dict.get("time_signatures") or [])
@@ -735,6 +736,20 @@ def validate_request(
                     validate_pitch_mask(v)
                 except ValueError as exc:
                     raise RequestValidationError(f"track_id={tp.id}: {exc}") from exc
+            elif k == "velocity_mask":
+                if tp.ignore:
+                    raise RequestValidationError(
+                        f"track_id={tp.id}: ignored tracks must not specify velocity_mask "
+                        f"(nothing is sampled for an ignored track)"
+                    )
+                if not isinstance(v, dict):
+                    raise RequestValidationError(
+                        f"track_id={tp.id}: controls['velocity_mask'] must be a dict, got {type(v).__name__}"
+                    )
+                try:
+                    validate_velocity_mask(v)
+                except ValueError as exc:
+                    raise RequestValidationError(f"track_id={tp.id}: {exc}") from exc
             elif k == "rhythm_mask":
                 if tp.ignore:
                     raise RequestValidationError(
@@ -785,6 +800,11 @@ def validate_request(
                     validate_remix(v)
                 except ValueError as exc:
                     raise RequestValidationError(f"track_id={tp.id}: {exc}") from exc
+                if float(v["amount"]) == 0.0 and cfg.novelty_check:
+                    raise RequestValidationError(
+                        f"track_id={tp.id}: remix.amount 0 keeps every pitch and onset, which "
+                        f"novelty_check rejects on every attempt: set config.novelty_check=False"
+                    )
                 if "rhythm_mask" in controls:
                     raise RequestValidationError(
                         f"track_id={tp.id}: 'remix' and 'rhythm_mask' are mutually exclusive "

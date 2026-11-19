@@ -108,6 +108,75 @@ def validate_pitch_mask(pitch_mask: dict[str, Any]) -> None:
             raise ValueError("pitch_mask.shape: min must be <= max")
 
 
+def velocity_level_of(velocity: int, n_levels: int) -> int:
+    """The VelocityLevel bin of a MIDI velocity (mirrors the C++ VelocityQuantizer::encode). Bin 0 is velocity 0,
+    which the encoder never emits."""
+    if velocity <= 0:
+        return 0
+    if velocity >= 127:
+        return n_levels - 1
+    return min(1 + velocity * (n_levels - 1) // 128, n_levels - 1)
+
+
+def resolve_velocity_allow_set(velocity_mask: dict[str, Any] | None) -> set[int] | None:
+    """Resolve a `velocity_mask` control dict to the hard set of allowed MIDI velocities (1-127), or None if it
+    places no hard restriction (e.g. it only carries a `shape`). `velocities` (explicit allow-list) takes precedence
+    over `min`/`max`."""
+    if not velocity_mask:
+        return None
+    if "velocities" in velocity_mask:
+        return {int(v) for v in velocity_mask["velocities"] if 1 <= int(v) <= 127}
+    if "min" in velocity_mask or "max" in velocity_mask:
+        lo, hi = int(velocity_mask.get("min", 1)), int(velocity_mask.get("max", 127))
+        return set(range(max(1, lo), min(127, hi) + 1))
+    return None
+
+
+def velocity_level_weights(velocity_mask: dict[str, Any], n_levels: int) -> list[float]:
+    """Per-VelocityLevel weight for a `velocity_mask` control dict: the mean over the MIDI velocities in the bin of
+    (allowed by the hard set) x (the `shape` weight, as pitch_shape_weight but over velocity). Bin 0 (velocity 0)
+    gets 0. With 128 levels each bin is one velocity; with 32, four."""
+    allow_set = resolve_velocity_allow_set(velocity_mask)
+    shape = velocity_mask.get("shape")
+    total = [0.0] * n_levels
+    count = [0] * n_levels
+    for v in range(1, 128):
+        level = velocity_level_of(v, n_levels)
+        w = 1.0 if allow_set is None or v in allow_set else 0.0
+        if w and shape:
+            w *= pitch_shape_weight(shape, v)
+        total[level] += w
+        count[level] += 1
+    return [total[i] / count[i] if count[i] else 0.0 for i in range(n_levels)]
+
+
+def validate_velocity_mask(velocity_mask: dict[str, Any]) -> None:
+    """Structural validation for a `velocity_mask` control dict — raises ValueError on anything malformed."""
+    known_keys = {"velocities", "min", "max", "shape"}
+    unknown = set(velocity_mask) - known_keys
+    if unknown:
+        raise ValueError(f"velocity_mask: unknown key(s) {sorted(unknown)} (known: {sorted(known_keys)})")
+    if "velocities" in velocity_mask and ("min" in velocity_mask or "max" in velocity_mask):
+        raise ValueError("velocity_mask: 'velocities' and 'min'/'max' are mutually exclusive")
+    for v in velocity_mask.get("velocities", []):
+        if not (1 <= int(v) <= 127):
+            raise ValueError(f"velocity_mask.velocities: {v} out of MIDI velocity range [1, 127]")
+    if int(velocity_mask.get("min", 1)) > int(velocity_mask.get("max", 127)):
+        raise ValueError("velocity_mask: min must be <= max")
+    allow_set = resolve_velocity_allow_set(velocity_mask)
+    if allow_set is not None and not allow_set:
+        raise ValueError("velocity_mask: resolves to zero allowed velocities")
+    shape = velocity_mask.get("shape")
+    if shape is not None:
+        if not isinstance(shape, dict) or "type" not in shape:
+            raise ValueError("velocity_mask.shape must be a dict with a 'type' key")
+        pitch_shape_weight(shape, 64)  # raises on unknown type / bad values
+        if shape.get("type") == "uniform" and int(shape.get("min", 0)) > int(shape.get("max", 127)):
+            raise ValueError("velocity_mask.shape: min must be <= max")
+    if not any(velocity_level_weights(velocity_mask, 128)):
+        raise ValueError("velocity_mask: the hard set and the shape leave no velocity with nonzero weight")
+
+
 # Named grid subdivisions for TrackPrompt.controls["rhythm_mask"]["grid"]["unit"]
 # — expressed as a fraction of one quarter note. Actual tick spacing is
 # derived at runtime as round(encoder resolution (ticks/quarter) * fraction),
@@ -215,10 +284,11 @@ def validate_remix(remix: dict[str, Any]) -> None:
     amount = remix.get("amount")
     if amount is None:
         raise ValueError("remix: 'amount' is required")
-    if not (0.0 < float(amount) <= 1.0):
-        # 0 resamples nothing: the reply would be the reference itself, which the novelty check then rejects on
-        # every attempt. Refused like a request with nothing to generate.
-        raise ValueError(f"remix.amount must be in (0, 1] (got {amount}); 0 changes nothing")
+    if not (0.0 <= float(amount) <= 1.0):
+        # 0 resamples no pitch or duration: every note is forced from the reference, and only what the forcer leaves
+        # free is sampled (velocity and microtiming: a "humanize" pass). Pitch and onset then match the reference,
+        # which the novelty check rejects, so validate_request requires novelty_check=False with it.
+        raise ValueError(f"remix.amount must be in [0, 1] (got {amount})")
     mode = remix.get("mode", "pitch")
     if mode not in ("pitch", "full"):
         raise ValueError(f"remix.mode must be 'pitch' or 'full' (got {mode!r})")

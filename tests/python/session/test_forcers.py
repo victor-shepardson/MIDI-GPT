@@ -222,6 +222,29 @@ def test_variation_forcer_resamples_at_least_one_note():
         assert free == open_notes, (amount, free)
 
 
+def test_variation_forcer_amount_zero_forces_every_note_but_leaves_velocity_and_delta():
+    delta = (VOCAB, VOCAB + 4)   # a Delta range past the toy vocabulary's end
+    bars = [[(0, [(60, 3)]), (12, [(62, 3)])]]
+    f = _VariationForcer("pitch", 0.0, bars, POS, ONSET, DUR, VEL, BAREND, delta_ranges=(delta,))
+    for pitch in (60, 62):
+        m = torch.ones(VOCAB + 4, dtype=torch.bool)
+        f.apply(m)
+        assert int(m[ONSET[0] : ONSET[1]].sum()) == 1 and bool(m[ONSET[0] + pitch])   # pitch forced
+        assert bool(m[VEL[0] : VEL[1]].all()) and bool(m[delta[0] : delta[1]].all())   # velocity, delta free
+        f.advance("NoteOnset")
+        f.advance("NoteDuration")
+        f.advance("TimeAbsolutePos")
+
+
+def test_variation_forcer_leaves_bars_past_the_schedule_alone():
+    # an AR step whose window extends past its target bars generates those bars too (and discards them)
+    f = _VariationForcer("pitch", 0.0, [[(0, [(60, 3)])]], POS, ONSET, DUR, VEL, BAREND)
+    f.advance("BarEnd")
+    m = legal()
+    f.apply(m)
+    assert bool(m.all())
+
+
 def test_variation_forcer_leaves_an_empty_reference_bar_alone():
     # no notes to vary: nothing forced or blocked in that bar (blocking every note left no legal token)
     f = _VariationForcer("pitch", 1.0, [[], [(0, [(60, 3)])]], POS, ONSET, DUR, VEL, BAREND, fill_end_id=FILLEND)

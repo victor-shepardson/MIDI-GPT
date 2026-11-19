@@ -395,6 +395,7 @@ class HttpServer:
             "supports_attention_skip": True,
             "supports_remove": True,
             "supports_pitch_mask": "NoteOnset" in td_types,
+            "supports_velocity_mask": "VelocityLevel" in td_types,
             "pitch_mask_scale_presets": sorted(PITCH_SCALE_PRESETS),
             "supports_rhythm_mask": "TimeAbsolutePos" in td_types,
             "rhythm_mask_grid_units": sorted(GRID_UNIT_FRACTIONS),

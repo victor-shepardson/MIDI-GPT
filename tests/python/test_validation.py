@@ -336,10 +336,21 @@ def test_mask_mode_token_with_vocab_support_passes_without_masked_bars(
     assert all(tp.mask_bars == [] for tp in out.tracks)
 
 
-@pytest.mark.parametrize("amount", [0, 0.0, -0.1, 1.5])
-def test_remix_amount_must_change_something(simple_score, ghost_config, ghost_analyzer, amount):
-    """remix.amount 0 resamples nothing (the reply would be the reference itself): refused like nothing to generate."""
+@pytest.mark.parametrize("amount", [-0.1, 1.5])
+def test_remix_amount_must_be_a_share(simple_score, ghost_config, ghost_analyzer, amount):
     req = GenerationRequest(tracks=[TrackPrompt(id=0, bars=[1, 2], controls={"remix": {"amount": amount}})],
                             config=InferenceConfig(model_dim=4, tracks_per_step=1))
     with pytest.raises(RequestValidationError, match=r"remix"):
         validate_request(req, simple_score, ghost_config, analyzer=ghost_analyzer)
+
+
+@pytest.mark.parametrize("amount", [0, 0.0])
+def test_remix_amount_zero_needs_novelty_check_off(simple_score, ghost_config, ghost_analyzer, amount):
+    """remix.amount 0 keeps every pitch and onset (only velocity and microtiming are sampled), which novelty_check
+    would reject on every attempt."""
+    req = GenerationRequest(tracks=[TrackPrompt(id=0, bars=[1, 2], controls={"remix": {"amount": amount}})],
+                            config=InferenceConfig(model_dim=4, tracks_per_step=1))
+    with pytest.raises(RequestValidationError, match=r"novelty_check"):
+        validate_request(req, simple_score, ghost_config, analyzer=ghost_analyzer)
+    req.config = InferenceConfig(model_dim=4, tracks_per_step=1, novelty_check=False)
+    validate_request(req, simple_score, ghost_config, analyzer=ghost_analyzer)
