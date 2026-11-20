@@ -1841,13 +1841,13 @@ class SamplingSession:
         except ImportError:
             raise ImportError("pip install midigpt[inference]") from None
 
-        # Seed the global torch RNG so torch.multinomial below is reproducible
-        # when the user pins a seed. seed<0 means "leave the RNG state alone"
-        # — i.e. continue from wherever the global generator currently is.
-        if seed is not None and seed >= 0:
-            torch.manual_seed(int(seed))
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(int(seed))
+        # A pinned seed draws from this step's own generator, so torch.multinomial
+        # below is reproducible — also with sessions sampling concurrently in other
+        # threads, which reseeding the global generator would interleave. A CPU
+        # Generator seeded like the global one draws the same sequence, so results
+        # match the earlier global seeding (probs are on the CPU). seed<0 continues
+        # from wherever the global generator currently is.
+        _gen = torch.Generator().manual_seed(int(seed)) if seed is not None and seed >= 0 else None
 
         score, state, mask_mode, use_span_masks, t_enc, _use_velocity, _use_microtiming = self._prepare_state(score, step)
 
@@ -2160,7 +2160,7 @@ class SamplingSession:
 
                 probs = self._apply_sampling_filters(probs)
 
-                token = torch.multinomial(probs, 1).item()
+                token = torch.multinomial(probs, 1, generator=_gen).item()
                 # Diagnostic: when we just sampled a melodic NoteOnset, check
                 # whether the very next mask permits non-NoteDuration tokens
                 # (a real-grammar bug if so).
