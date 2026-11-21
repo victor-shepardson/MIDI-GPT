@@ -319,6 +319,9 @@ class InferenceConfig:
     model_dim: int = 4  # context window size in bars (NOT vocab size)
     ar_overlap: float = 0.5  # auto bars_per_step, AR: share of the window kept as history
     min_overlap_bars: int = 2  # auto bars_per_step, AR: at least this many bars of history
+    # AR: each step's window extends this many bars past the bars it writes, so the context tracks are visible ahead
+    # of them (capped at model_dim - bars_per_step; 0 = off). See midigpt.inference.planner.
+    lookahead: int = 0
     plan_only: bool = False  # return the plan (steps, windows, bars) without generating
     # When a step would not fit the model (prompt + budget_margin x its estimated output), whole context tracks
     # are left out of the request (midigpt.inference.context_fit): "auto" drops context_drop first, then the

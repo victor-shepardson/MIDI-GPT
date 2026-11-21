@@ -15,13 +15,13 @@ from midigpt.inference.config import GenerationRequest, InferenceConfig, TrackPr
 from midigpt.inference.engine import InferenceEngine
 
 
-def _plan(targets: dict, ar=False, nb=16, D=8, bps=0, tps=0, nt=None):
+def _plan(targets: dict, ar=False, nb=16, D=8, bps=0, tps=0, nt=None, lookahead=0):
     nt = nt or max(targets) + 1
     sel = [[False] * nb for _ in range(nt)]
     for t, bs in targets.items():
         for b in bs:
             sel[t][b] = True
-    return [s.summary() for s in planner.plan(sel, [ar] * nt, [False] * nt, D, bps, tps)]
+    return [s.summary() for s in planner.plan(sel, [ar] * nt, [False] * nt, D, bps, tps, lookahead=lookahead)]
 
 
 def _windows(plan):
@@ -51,6 +51,22 @@ def test_ar_rest_of_the_run_in_one_window_when_the_history_allows():
 
 def test_explicit_bars_per_step_equal_to_window_gives_independent_windows():
     assert _windows(_plan({0: range(16)}, ar=True, bps=8)) == [((0, 8), list(range(8))), ((8, 16), list(range(8, 16)))]
+
+
+def test_ar_lookahead_windows_extend_past_the_written_bars():
+    # 16-bar windows, 8 bars per step, 4 bars ahead: each window ends 4 bars past what its step writes, except at
+    # the end of the piece, where the last step writes everything left
+    assert _windows(_plan({0: range(32)}, ar=True, nb=32, D=16, bps=8, lookahead=4)) == [
+        ((0, 16), list(range(12))), ((8, 24), list(range(12, 20))), ((16, 32), list(range(20, 32)))]
+
+
+def test_ar_lookahead_is_capped_at_the_window_minus_bars_per_step():
+    assert _plan({0: range(16)}, ar=True, D=8, bps=4, lookahead=100) == \
+        _plan({0: range(16)}, ar=True, D=8, bps=4, lookahead=4)
+
+
+def test_lookahead_leaves_infill_alone():
+    assert _plan({0: range(16)}, D=8, bps=8, lookahead=4) == _plan({0: range(16)}, D=8, bps=8)
 
 
 def test_infill_chunk_is_one_centred_window():
@@ -128,7 +144,8 @@ def test_plan_only_returns_the_plan(tiny_gpt2, ghost_tokenizer, ghost_analyzer):
     assert data["plan"] == [{"window": [0, 16], "autoregressive": True, "generate": {"1": [13, 14, 15]}}]
 
 
-@pytest.mark.parametrize("field,value", [("ar_overlap", 1.0), ("min_overlap_bars", -1), ("bars_per_step", -2)])
+@pytest.mark.parametrize("field,value", [("ar_overlap", 1.0), ("min_overlap_bars", -1), ("bars_per_step", -2),
+                                         ("lookahead", -1)])
 def test_bad_planning_values_rejected(tiny_gpt2, ghost_tokenizer, ghost_analyzer, field, value):
     from midigpt.inference.validation import RequestValidationError
     score = Score(tracks=[melodic_track(n_bars=8)])

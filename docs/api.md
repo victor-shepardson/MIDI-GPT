@@ -198,6 +198,7 @@ Controls the step planner and sampling pipeline.
 | `tracks_per_step` | int or `"auto"` | 1 | Infill tracks generated together (AR is always one track per step). `"auto"`: all of them |
 | `ar_overlap` | float | 0.5 | `"auto"` `bars_per_step`, AR: the share of the window kept as history |
 | `min_overlap_bars` | int | 2 | `"auto"` `bars_per_step`, AR: at least this many bars of history |
+| `lookahead` | int | 0 | AR: each step's window extends this many bars past the bars it writes, so the context tracks are visible ahead of them (the model still generates the target track to the window's end; those extra bars are discarded and written by the next step). The rest of the window is the track's own history. Capped at `model_dim - bars_per_step`; 0 = off. No effect on infill |
 | `context` | str | `"auto"` | When a step would not fit the model (prompt + `budget_margin` × its estimated output), whole context tracks are left out of the request: `"auto"` drops `context_drop` first, then the tracks the model attends to least (attention from the end of the prompt, top layers, per token; a role table when the prompt is too long to read); `"listed"` drops only `context_drop`; `"all"` never drops. Then, for what the request leaves `"auto"`: fewer infill tracks per step, then fewer bars per step (each halved). The window steps down only when all of that is not enough |
 | `context_drop` | list[int] | `[]` | Tracks to drop first, in this order |
 | `context_keep` | list[int] | `[]` | Tracks never dropped (targets never are) |

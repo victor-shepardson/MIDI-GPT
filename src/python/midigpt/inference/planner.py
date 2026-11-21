@@ -8,6 +8,12 @@ Windows follow the targets, not a grid from bar 0:
   slides once the generated bars reach its edge: from bar 0 the first step writes the whole window; after that each
   step slides by bars_per_step. The rest of a run that fits in one window ending on it, with at least
   min_overlap_bars of history, is written in that window.
+- AR with lookahead (lookahead > 0): each window instead extends `lookahead` bars past the last bar its step writes,
+  so the context tracks are visible ahead of it (the model still generates the target track up to the window's
+  end; bars past the step's are discarded). Each step writes bars_per_step bars and the next continues from there;
+  the rest of the window (model_dim - bars_per_step - lookahead bars) is the track's own history. At the end of the
+  piece there is nothing to look ahead to, so the last step writes everything left. lookahead is capped at
+  model_dim - bars_per_step.
 - Infill (tracks_per_step tracks at a time): the target bars of a group are taken in chunks that span at most
   bars_per_step bars, each with a window centred on it (shifted at the piece's edges).
 
@@ -97,6 +103,24 @@ def plan_ar(track: int, bars, n_bars: int, D: int, B: int, min_history: int = 2)
     return steps
 
 
+def plan_ar_lookahead(track: int, bars, n_bars: int, D: int, B: int, lookahead: int) -> list[PlannedStep]:
+    """AR steps whose window extends `lookahead` bars past the last bar each step writes (see the module docstring)."""
+    lookahead = min(lookahead, D - B)
+    steps = []
+    for s, e in runs(bars):
+        pos = s
+        while pos < e:
+            we = min(pos + B + lookahead, n_bars)
+            ws = max(0, we - D)
+            we = min(ws + D, n_bars)
+            # at the end of the piece there is nothing to look ahead to: write the rest
+            end = e if we == n_bars else max(pos + B, we - lookahead)
+            end = min(end, e)
+            steps.append(PlannedStep(ws, we, True, {(track, b) for b in range(pos, end)}))
+            pos = end
+    return steps
+
+
 def plan_infill(group: list[int], targets: dict, n_bars: int, D: int, B: int) -> list[PlannedStep]:
     steps = []
     remaining = sorted({b for t in group for b in targets[t]})
@@ -114,9 +138,10 @@ def plan_infill(group: list[int], targets: dict, n_bars: int, D: int, B: int) ->
 
 
 def plan(selected, autoregressive, ignore, D: int, bars_per_step: int = 0, tracks_per_step: int = 0,
-         ar_overlap: float = 0.5, min_overlap_bars: int = 2) -> list[PlannedStep]:
+         ar_overlap: float = 0.5, min_overlap_bars: int = 2, lookahead: int = 0) -> list[PlannedStep]:
     """selected[t][b]: bar b of track t is a target; autoregressive[t] / ignore[t] per track. AR steps first (in
-    track order: a later AR track sees the earlier ones' new bars), then infill."""
+    track order: a later AR track sees the earlier ones' new bars), then infill. lookahead > 0 plans the AR steps
+    with plan_ar_lookahead; it does not affect infill."""
     nt = len(selected)
     nb = len(selected[0]) if nt else 0
     targets = {t: [b for b in range(nb) if selected[t][b]] for t in range(nt) if not ignore[t]}
@@ -125,7 +150,10 @@ def plan(selected, autoregressive, ignore, D: int, bars_per_step: int = 0, track
     B_ar = bars_per_step if bars_per_step > 0 else auto_bars_per_step(D, True, ar_overlap, min_overlap_bars)
     for t in sorted(targets):
         if autoregressive[t]:
-            steps += plan_ar(t, targets[t], nb, D, min(B_ar, D), min_overlap_bars)
+            if lookahead > 0:
+                steps += plan_ar_lookahead(t, targets[t], nb, D, min(B_ar, D), lookahead)
+            else:
+                steps += plan_ar(t, targets[t], nb, D, min(B_ar, D), min_overlap_bars)
     infill = [t for t in sorted(targets) if not autoregressive[t]]
     T = tracks_per_step if tracks_per_step > 0 else max(1, len(infill))
     B_in = bars_per_step if bars_per_step > 0 else D

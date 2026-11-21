@@ -1074,7 +1074,7 @@ class SamplingSession:
             mask.selected, mask.autoregressive, mask.ignore, cfg.model_dim,
             cfg.bars_per_step or getattr(self, "_split_bps", 0),
             cfg.tracks_per_step or getattr(self, "_split_tps", 0),
-            cfg.ar_overlap, cfg.min_overlap_bars,
+            cfg.ar_overlap, cfg.min_overlap_bars, cfg.lookahead,
         )
         ignored = {t for t in range(n_tracks) if mask.ignore[t]}
         return [s.to_core(n_tracks, n_bars, ignored) for s in planned]

@@ -142,6 +142,8 @@ def validate_request(
         raise RequestValidationError(f"budget_margin must be >= 1 (got {cfg.budget_margin})")
     if cfg.min_overlap_bars < 0:
         raise RequestValidationError(f"min_overlap_bars must be >= 0 (got {cfg.min_overlap_bars})")
+    if cfg.lookahead < 0:
+        raise RequestValidationError(f"lookahead must be >= 0 (got {cfg.lookahead})")
     if cfg.max_attempts < 1:
         raise RequestValidationError(f"max_attempts must be >= 1 (got {cfg.max_attempts})")
     if cfg.num_candidates < 1:
